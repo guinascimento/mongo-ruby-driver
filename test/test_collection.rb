@@ -53,18 +53,55 @@ class TestCollection < Test::Unit::TestCase
     assert_equal 5, @@db.collection("test.foo").find_one()["x"]
   end
 
-  if @@version > "1.1"
-    def test_distinct
-      @@test.remove
-      @@test.insert([{:a => 0, :b => {:c => "a"}},
-                     {:a => 1, :b => {:c => "b"}},
-                     {:a => 1, :b => {:c => "c"}},
-                     {:a => 2, :b => {:c => "a"}},
-                     {:a => 3},
-                     {:a => 3}])
+  def test_nil_id
+    assert_equal 5, @@test.insert({"_id" => 5, "foo" => "bar"}, {:safe => true})
+    assert_equal 5, @@test.save({"_id" => 5, "foo" => "baz"}, {:safe => true})
+    assert_equal nil, @@test.find_one("foo" => "bar")
+    assert_equal "baz", @@test.find_one(:_id => 5)["foo"]
+    assert_raise OperationFailure do
+      @@test.insert({"_id" => 5, "foo" => "bar"}, {:safe => true})
+    end
 
-      assert_equal [0, 1, 2, 3], @@test.distinct(:a).sort
-      assert_equal ["a", "b", "c"], @@test.distinct("b.c").sort
+    assert_equal nil, @@test.insert({"_id" => nil, "foo" => "bar"}, {:safe => true})
+    assert_equal nil, @@test.save({"_id" => nil, "foo" => "baz"}, {:safe => true})
+    assert_equal nil, @@test.find_one("foo" => "bar")
+    assert_equal "baz", @@test.find_one(:_id => nil)["foo"]
+    assert_raise OperationFailure do
+      @@test.insert({"_id" => nil, "foo" => "bar"}, {:safe => true})
+    end
+    assert_raise OperationFailure do
+      @@test.insert({:_id => nil, "foo" => "bar"}, {:safe => true})
+    end
+  end
+
+  if @@version > "1.1"
+    context "distinct queries" do
+      setup do
+        @@test.remove
+        @@test.insert([{:a => 0, :b => {:c => "a"}},
+                       {:a => 1, :b => {:c => "b"}},
+                       {:a => 1, :b => {:c => "c"}},
+                       {:a => 2, :b => {:c => "a"}},
+                       {:a => 3},
+                       {:a => 3}])
+      end
+
+      should "return distinct values" do
+        assert_equal [0, 1, 2, 3], @@test.distinct(:a).sort
+        assert_equal ["a", "b", "c"], @@test.distinct("b.c").sort
+      end
+
+      if @@version >= "1.2"
+
+        should "filter collection with query" do
+          assert_equal [2, 3], @@test.distinct(:a, {:a => {"$gt" => 1}}).sort
+        end
+
+        should "filter nested objects" do
+          assert_equal ["a", "b"], @@test.distinct("b.c", {"b.c" => {"$ne" => "c"}}).sort
+        end
+
+      end
     end
   end
 
@@ -259,26 +296,42 @@ class TestCollection < Test::Unit::TestCase
     assert c.closed?
   end
 
-  def test_mapreduce
-    @@test << { "user_id" => 1 }
-    @@test << { "user_id" => 2 }
+  if @@version < "1.1.1"
+    def test_map_reduce
+      @@test << { "user_id" => 1 }
+      @@test << { "user_id" => 2 }
 
-    m = "function() { emit(this.user_id, 1); }"
-    r = "function(k,vals) { return 1; }"
-    res = @@test.map_reduce(m, r);
-    assert res.find_one({"_id" => 1})
-    assert res.find_one({"_id" => 2})
-  end
+      m = "function() { emit(this.user_id, 1); }"
+      r = "function(k,vals) { return 1; }"
+      res = @@test.map_reduce(m, r);
+      assert res.find_one({"_id" => 1})
+      assert res.find_one({"_id" => 2})
+    end
 
-  def test_mapreduce_with_code_objects
-    @@test << { "user_id" => 1 }
-    @@test << { "user_id" => 2 }
+    def test_map_reduce_with_code_objects
+      @@test << { "user_id" => 1 }
+      @@test << { "user_id" => 2 }
 
-    m = Code.new("function() { emit(this.user_id, 1); }")
-    r = Code.new("function(k,vals) { return 1; }")
-    res = @@test.map_reduce(m, r);
-    assert res.find_one({"_id" => 1})
-    assert res.find_one({"_id" => 2})
+      m = Code.new("function() { emit(this.user_id, 1); }")
+      r = Code.new("function(k,vals) { return 1; }")
+      res = @@test.map_reduce(m, r);
+      assert res.find_one({"_id" => 1})
+      assert res.find_one({"_id" => 2})
+    end
+
+    def test_map_reduce_with_options
+      @@test.remove
+      @@test << { "user_id" => 1 }
+      @@test << { "user_id" => 2 }
+      @@test << { "user_id" => 3 }
+
+      m = Code.new("function() { emit(this.user_id, 1); }")
+      r = Code.new("function(k,vals) { return 1; }")
+      res = @@test.map_reduce(m, r, :query => {"user_id" => {"$gt" => 1}});
+      assert_equal 2, res.count
+      assert res.find_one({"_id" => 2})
+      assert res.find_one({"_id" => 3})
+    end
   end
 
   def test_saving_dates_pre_epoch
@@ -306,12 +359,12 @@ class TestCollection < Test::Unit::TestCase
       @@test.save(:foo => i)
     end
 
-    assert_equal 5, @@test.find({}, :skip => 5).next_object()["foo"]
-    assert_equal nil, @@test.find({}, :skip => 10).next_object()
+    assert_equal 5, @@test.find({}, :skip => 5).next_document()["foo"]
+    assert_equal nil, @@test.find({}, :skip => 10).next_document()
 
     assert_equal 5, @@test.find({}, :limit => 5).to_a.length
 
-    assert_equal 3, @@test.find({}, :skip => 3, :limit => 5).next_object()["foo"]
+    assert_equal 3, @@test.find({}, :skip => 3, :limit => 5).next_document()["foo"]
     assert_equal 5, @@test.find({}, :skip => 3, :limit => 5).to_a.length
   end
 
@@ -348,82 +401,104 @@ class TestCollection < Test::Unit::TestCase
     assert_equal 1, x
   end
 
-  def test_group_with_scope
-    @@test.save("a" => 1)
-    @@test.save("b" => 1)
-
-    reduce_function = "function (obj, prev) { prev.count += inc_value; }"
-
-    assert_equal 2, @@test.group([], {}, {"count" => 0},
-                                 Code.new(reduce_function,
-                                          {"inc_value" => 1}))[0]["count"]
-
-# TODO enable these tests when SERVER-262 is fixed
-
-#     assert_equal 2, @@test.group([], {}, {"count" => 0},
-#                                  Code.new(reduce_function,
-#                                           {"inc_value" => 1}), true)[0]["count"]
-
-    assert_equal 4, @@test.group([], {}, {"count" => 0},
-                                 Code.new(reduce_function,
-                                          {"inc_value" => 2}))[0]["count"]
-#     assert_equal 4, @@test.group([], {}, {"count" => 0},
-#                                  Code.new(reduce_function,
-#                                           {"inc_value" => 2}), true)[0]["count"]
-
-    assert_equal 1, @@test.group([], {}, {"count" => 0},
-                                 Code.new(reduce_function,
-                                          {"inc_value" => 0.5}))[0]["count"]
-#     assert_equal 1, @@test.group([], {}, {"count" => 0},
-#                                  Code.new(reduce_function,
-#                                           {"inc_value" => 0.5}), true)[0]["count"]
+  context "Grouping" do
+    setup do 
+      @@test.remove
+      @@test.save("a" => 1)
+      @@test.save("b" => 1)
+      @initial = {"count" => 0}
+      @reduce_function = "function (obj, prev) { prev.count += inc_value; }"
     end
 
-  context "A collection with two records" do 
+    should "group results using eval form" do
+      assert_equal 1, @@test.group([], {}, @initial, Code.new(@reduce_function, {"inc_value" => 0.5}))[0]["count"]
+      assert_equal 2, @@test.group([], {}, @initial, Code.new(@reduce_function, {"inc_value" => 1}))[0]["count"]
+      assert_equal 4, @@test.group([], {}, @initial, Code.new(@reduce_function, {"inc_value" => 2}))[0]["count"]
+    end
+
+    should "group results using command form" do
+      assert_equal 1, @@test.group([], {}, @initial, Code.new(@reduce_function, {"inc_value" => 0.5}), true)[0]["count"]
+      assert_equal 2, @@test.group([], {}, @initial, Code.new(@reduce_function, {"inc_value" => 1}), true)[0]["count"]
+      assert_equal 4, @@test.group([], {}, @initial, Code.new(@reduce_function, {"inc_value" => 2}), true)[0]["count"]
+    end
+
+    should "finalize grouped results" do
+      @finalize = "function(doc) {doc.f = doc.count + 200; }"
+      assert_equal 202, @@test.group([], {}, @initial, Code.new(@reduce_function, {"inc_value" => 1}), true, @finalize)[0]["f"]
+    end
+  end
+
+  context "Grouping with a key function" do
     setup do 
+      @@test.remove
+      @@test.save("a" => 1)
+      @@test.save("a" => 2)
+      @@test.save("a" => 3)
+      @@test.save("a" => 4)
+      @@test.save("a" => 5)
+      @initial = {"count" => 0}
+      @keyf    = "function (doc) { if(doc.a % 2 == 0) { return {even: true}; } else {return {odd: true}} };"
+      @reduce  = "function (obj, prev) { prev.count += 1; }"
+    end
+
+    should "group results" do
+      results = @@test.group(@keyf, {}, @initial, @reduce, true).sort {|a, b| a['count'] <=> b['count']}
+      assert results[0]['even'] && results[0]['count'] == 2.0
+      assert results[1]['odd'] && results[1]['count'] == 3.0
+    end
+
+    should "raise an error if trying to use keyf as a group eval" do
+      assert_raise OperationFailure do
+        @@test.group(@keyf, {}, @initial, @reduce)
+      end
+    end
+  end
+
+  context "A collection with two records" do
+    setup do
       @collection = @@db.collection('test-collection')
       @collection.insert({:name => "Jones"})
       @collection.insert({:name => "Smith"})
     end
 
-    should "have two records" do 
+    should "have two records" do
       assert_equal 2, @collection.size
     end
 
-    should "remove the two records" do 
+    should "remove the two records" do
       @collection.remove()
       assert_equal 0, @collection.size
     end
 
-    should "remove all records if an empty document is specified" do 
+    should "remove all records if an empty document is specified" do
       @collection.remove({})
       assert_equal 0, @collection.find.count
     end
 
-    should "remove only matching records" do 
+    should "remove only matching records" do
       @collection.remove({:name => "Jones"})
       assert_equal 1, @collection.size
     end
   end
 
-  context "Creating indexes " do 
-    setup do 
+  context "Creating indexes " do
+    setup do
       @collection = @@db.collection('test-collection')
     end
 
-    should "generate indexes in the proper order" do 
+    should "generate indexes in the proper order" do
       @collection.expects(:insert_documents) do |sel, coll, safe|
         assert_equal 'b_1_a_1', sel[:name]
       end
       @collection.create_index([['b', 1], ['a', 1]])
     end
 
-    context "with an index created" do 
-      setup do 
+    context "with an index created" do
+      setup do
         @collection.create_index([['b', 1], ['a', 1]])
       end
 
-      should "return properly ordered index information" do 
+      should "return properly ordered index information" do
         assert_equal [['b', 1], ['a', 1]], @collection.index_information["b_1_a_1"]
       end
     end

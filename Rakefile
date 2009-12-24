@@ -1,3 +1,4 @@
+# -*- mode: ruby; -*-
 require 'rubygems'
 require 'rubygems/specification'
 require 'fileutils'
@@ -11,9 +12,6 @@ end
 require 'rbconfig'
 include Config
 ENV['TEST_MODE'] = 'TRUE'
-
-gem_command = "gem"
-gem_command = "gem1.9" if $0.match(/1\.9$/) # use gem1.9 if we used rake1.9
 
 desc "Test the MongoDB Ruby driver."
 task :test do
@@ -95,20 +93,16 @@ namespace :gem do
 
   desc "Install the gem locally"
   task :install do
-    sh <<EOS
-#{gem_command} build mongo-ruby-driver.gemspec &&
-    #{gem_command} install mongo-*.gem &&
-    rm mongo-*.gem
-EOS
+    sh "gem build mongo-ruby-driver.gemspec"
+    sh "gem install mongo-*.gem"
+    sh "rm mongo-*.gem"
   end
 
   desc "Install the optional c extensions"
   task :install_extensions do
-    sh <<EOS
-#{gem_command} build mongo-extensions.gemspec &&
-    #{gem_command} install mongo_ext-*.gem &&
-    rm mongo_ext-*.gem
-EOS
+    sh "gem build mongo-extensions.gemspec"
+    sh "gem install mongo_ext-*.gem"
+    sh "rm mongo_ext-*.gem"
   end
 
 end

@@ -44,7 +44,7 @@ module Mongo
 
     # Adds a primary key to the given document if needed.
     def self.create_pk(doc)
-      doc[:_id] || doc['_id'] ? doc : doc.merge!(:_id => self.new)
+      doc.has_key?(:_id) || doc.has_key?('_id') ? doc : doc.merge!(:_id => self.new)
     end
 
     # +data+ is an array of bytes. If nil, a new id will be generated.
@@ -70,7 +70,7 @@ module Mongo
     # Given a string representation of an ObjectID, return a new ObjectID
     # with that value.
     def self.from_string(str)
-      raise "illegal ObjectID format" unless legal?(str)
+      raise InvalidObjectID, "illegal ObjectID format" unless legal?(str)
       data = []
       12.times do |i|
         data[i] = str[i * 2, 2].to_i(16)
@@ -83,7 +83,7 @@ module Mongo
     # removed. If you are not sure that you need this method you should be
     # using the regular from_string.
     def self.from_string_legacy(str)
-      raise "illegal ObjectID format" unless legal?(str)
+      raise InvalidObjectID, "illegal ObjectID format" unless legal?(str)
       data = []
       BYTE_ORDER.each_with_index { |string_position, data_index|
         data[data_index] = str[string_position * 2, 2].to_i(16)
@@ -132,9 +132,8 @@ module Mongo
 
     private
 
-    begin
-      require 'mongo_ext/cbson'
-    rescue LoadError
+    # We need to define this method only if CBson isn't loaded.
+    unless defined? CBson
       def generate
         oid = ''
 

@@ -23,6 +23,13 @@ class BSONTest < Test::Unit::TestCase
     assert_equal doc, BSON.deserialize(bson)
   end
 
+  def test_document_length
+    doc = {'name' => 'a' * 5 * 1024 * 1024}
+    assert_raise InvalidDocument do
+      assert BSON.serialize(doc)
+    end
+  end
+
   # In 1.8 we test that other string encodings raise an exception.
   # In 1.9 we test that they get auto-converted.
   if RUBY_VERSION < '1.9'
@@ -312,6 +319,20 @@ class BSONTest < Test::Unit::TestCase
     one = {"_id" => "foo"}
 
     assert_equal BSON.serialize(one).to_a, BSON.serialize(dup).to_a
+  end
+
+  def test_null_character
+    doc = {"a" => "\x00"}
+
+    assert_equal doc, BSON.deserialize(BSON.serialize(doc).to_a)
+
+    assert_raise InvalidDocument do
+      BSON.serialize({"\x00" => "a"})
+    end
+
+    assert_raise InvalidDocument do
+      BSON.serialize({"a" => (Regexp.compile "ab\x00c")})
+    end
   end
 
 end

@@ -100,12 +100,12 @@ module Mongo
     #              objects missed, which were preset at both the start and
     #              end of the query's execution. For details see
     #              http://www.mongodb.org/display/DOCS/How+to+do+Snapshotting+in+the+Mongo+Database
-    # :timeout :: When +true+ (default), the returned cursor will be subject to 
-    #             the normal cursor timeout behavior of the mongod process. 
+    # :timeout :: When +true+ (default), the returned cursor will be subject to
+    #             the normal cursor timeout behavior of the mongod process.
     #             When +false+, the returned cursor will never timeout. Note
     #             that disabling timeout will only work when #find is invoked
     #             with a block. This is to prevent any inadvertant failure to
-    #             close the cursor, as the cursor is explicitly closed when 
+    #             close the cursor, as the cursor is explicitly closed when
     #             block code finishes.
     def find(selector={}, options={})
       fields = options.delete(:fields)
@@ -116,7 +116,7 @@ module Mongo
       hint   = options.delete(:hint)
       snapshot = options.delete(:snapshot)
       if options[:timeout] == false && !block_given?
-        raise ArgumentError, "Timeout can be set to false only when #find is invoked with a block." 
+        raise ArgumentError, "Timeout can be set to false only when #find is invoked with a block."
       end
       timeout = block_given? ? (options.delete(:timeout) || true) : true
       if hint
@@ -126,7 +126,7 @@ module Mongo
       end
       raise RuntimeError, "Unknown options [#{options.inspect}]" unless options.empty?
 
-      cursor = Cursor.new(self, :selector => selector, :fields => fields, :skip => skip, :limit => limit, 
+      cursor = Cursor.new(self, :selector => selector, :fields => fields, :skip => skip, :limit => limit,
                           :order => sort, :hint => hint, :snapshot => snapshot, :timeout => timeout)
       if block_given?
         yield cursor
@@ -158,7 +158,7 @@ module Mongo
              else
                raise TypeError, "spec_or_object_id must be an instance of ObjectID or Hash, or nil"
              end
-      find(spec, options.merge(:limit => -1)).next_object
+      find(spec, options.merge(:limit => -1)).next_document
     end
 
     # Save a document in this collection.
@@ -175,7 +175,8 @@ module Mongo
     #   will be raised on an error. Checking for safety requires an extra
     #   round-trip to the database
     def save(to_save, options={})
-      if id = to_save[:_id] || to_save['_id']
+      if to_save.has_key?(:_id) || to_save.has_key?('_id')
+        id = to_save[:_id] || to_save['_id']
         update({:_id => id}, to_save, :upsert => true, :safe => options.delete(:safe))
         id
       else
@@ -204,14 +205,14 @@ module Mongo
     end
     alias_method :<<, :insert
 
-    # Remove all records from this collection. 
+    # Remove all records from this collection.
     # If +selector+ is specified, only matching documents will be removed.
-    # 
+    #
     # Remove all records from the collection:
     #   @collection.remove
     #   @collection.remove({})
     #
-    # Remove only records that have expired: 
+    # Remove only records that have expired:
     #   @collection.remove({:expire => {'$lte' => Time.now}})
     def remove(selector={})
       message = ByteBuffer.new
@@ -225,7 +226,7 @@ module Mongo
 
     # Update a single document in this collection.
     #
-    # :selector :: a hash specifying elements which must be present for a document to be updated. Note: 
+    # :selector :: a hash specifying elements which must be present for a document to be updated. Note:
     # the update command currently updates only the first document matching the
     # given selector. If you want all matching documents to be updated, be sure
     # to specify :multi => true.
@@ -254,7 +255,7 @@ module Mongo
         @connection.send_message_with_safe_check(Mongo::Constants::OP_UPDATE, message, @db.name,
           "db.#{@name}.update(#{selector.inspect}, #{document.inspect})")
       else
-        @connection.send_message(Mongo::Constants::OP_UPDATE, message, 
+        @connection.send_message(Mongo::Constants::OP_UPDATE, message,
           "db.#{@name}.update(#{selector.inspect}, #{document.inspect})")
       end
     end
@@ -329,7 +330,7 @@ module Mongo
 
       result = @db.command(hash)
       unless result["ok"] == 1
-        raise Mongo::OperationFailure, "map-reduce failed: #{result['errmsg']}" 
+        raise Mongo::OperationFailure, "map-reduce failed: #{result['errmsg']}"
       end
       @db[result["result"]]
     end
@@ -338,48 +339,80 @@ module Mongo
     # Performs a group query, similar to the 'SQL GROUP BY' operation.
     # Returns an array of grouped items.
     #
-    # :keys :: Array of fields to group by
-    # :condition :: specification of rows to be considered (as a 'find'
-    #               query specification)
+    # :key :: either 1) an array of fields to group by, 2) a javascript function to generate
+    #         the key object, or 3) nil.
+    # :condition :: an optional document specifying a query to limit the documents over which group is run.
     # :initial :: initial value of the aggregation counter object
     # :reduce :: aggregation function as a JavaScript string
+    # :finalize :: optional. a JavaScript function that receives and modifies
+    #              each of the resultant grouped objects. Available only when group is run
+    #              with command set to true.
     # :command :: if true, run the group as a command instead of in an
     #             eval - it is likely that this option will eventually be
     #             deprecated and all groups will be run as commands
-    def group(keys, condition, initial, reduce, command=false)
+    def group(key, condition, initial, reduce, command=false, finalize=nil)
+
       if command
-        hash = {}
-        keys.each do |k|
-          hash[k] = 1
-        end
 
         reduce = Code.new(reduce) unless reduce.is_a?(Code)
 
-        result = @db.command({"group" =>
-                                  {
-                                    "ns" => @name,
-                                    "$reduce" => reduce,
-                                    "key" => hash,
-                                    "cond" => condition,
-                                    "initial" => initial}})
+        group_command = {
+          "group" => {
+            "ns"      => @name,
+            "$reduce" => reduce,
+            "cond"    => condition,
+            "initial" => initial
+          }
+        }
+
+        unless key.nil?
+          if key.is_a? Array
+            key_type = "key"
+            key_value = {}
+            key.each { |k| key_value[k] = 1 }
+          else
+            key_type  = "$keyf"
+            key_value = key.is_a?(Code) ? key : Code.new(key)
+          end
+
+          group_command["group"][key_type] = key_value
+        end
+
+        # only add finalize if specified
+        if finalize
+          finalize = Code.new(finalize) unless finalize.is_a?(Code)
+          group_command['group']['finalize'] = finalize
+        end
+
+        result = @db.command group_command
+
         if result["ok"] == 1
           return result["retval"]
         else
           raise OperationFailure, "group command failed: #{result['errmsg']}"
         end
-      end
 
-      case reduce
-      when Code
-        scope = reduce.scope
       else
-        scope = {}
-      end
-      scope.merge!({
-                     "ns" => @name,
-                     "keys" => keys,
-                     "condition" => condition,
-                     "initial" => initial })
+
+        warn "Collection#group must now be run as a command; you can do this by passing 'true' as the command argument."
+
+        raise OperationFailure, ":finalize can be specified only when " +
+          "group is run as a command (set command param to true)" if finalize
+
+        raise OperationFailure, "key must be an array of fields to group by. If you want to pass a key function, 
+          run group as a command by passing 'true' as the command argument." unless key.is_a? Array || key.nil?
+
+        case reduce
+        when Code
+          scope = reduce.scope
+        else
+          scope = {}
+        end
+        scope.merge!({
+                       "ns" => @name,
+                       "keys" => key,
+                       "condition" => condition,
+                       "initial" => initial })
 
       group_function = <<EOS
 function () {
@@ -406,7 +439,8 @@ function () {
     return {"result": map.values()};
 }
 EOS
-      @db.eval(Code.new(group_function, scope))["result"]
+        @db.eval(Code.new(group_function, scope))["result"]
+      end
     end
 
     # Returns a list of distinct values for +key+ across all
@@ -422,11 +456,17 @@ EOS
     #     [10010, 94108, 99701]
     #   @collection.distinct("name.age")
     #     [27, 24]
-    def distinct(key)
+    #
+    # You may also pass a document selector as the second parameter
+    # to limit the documents over which distinct is run:
+    #   @collection.distinct("name.age", {"name.age" => {"$gt" => 24}})
+    #     [27]
+    def distinct(key, query=nil)
       raise MongoArgumentError unless [String, Symbol].include?(key.class)
       command = OrderedHash.new
       command[:distinct] = @name
-      command[:key]        = key.to_s
+      command[:key]      = key.to_s
+      command[:query]    = query
 
       @db.command(command)["values"]
     end
@@ -472,7 +512,7 @@ EOS
     # 'create' will be the collection name. For the other possible keys
     # and values, see DB#create_collection.
     def options
-      @db.collections_info(@name).next_object()['options']
+      @db.collections_info(@name).next_document['options']
     end
 
     # Get the number of documents in this collection.
@@ -501,7 +541,7 @@ EOS
 
     private
 
-    # Sends an Mongo::Constants::OP_INSERT message to the database.
+    # Sends a Mongo::Constants::OP_INSERT message to the database.
     # Takes an array of +documents+, an optional +collection_name+, and a
     # +check_keys+ setting.
     def insert_documents(documents, collection_name=@name, check_keys=true, safe=false)
@@ -523,7 +563,7 @@ EOS
       indexes = []
       spec.each_pair do |field, direction|
         indexes.push("#{field}_#{direction}")
-      end 
+      end
       indexes.join("_")
     end
   end

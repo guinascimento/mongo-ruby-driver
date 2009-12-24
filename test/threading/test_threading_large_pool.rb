@@ -6,7 +6,7 @@ class TestThreadingLargePool < Test::Unit::TestCase
 
   include Mongo
 
-  @@db = Connection.new('localhost', 27017, :pool_size => 50, :timeout => 15).db('ruby-mongo-test')
+  @@db = Connection.new('localhost', 27017, :pool_size => 50, :timeout => 10).db('ruby-mongo-test')
   @@coll = @@db.collection('thread-test-collection')
 
   def set_up_safe_data
@@ -25,7 +25,7 @@ class TestThreadingLargePool < Test::Unit::TestCase
   def test_safe_update
     set_up_safe_data
     threads = []
-    100.times do |i|
+    1000.times do |i|
       threads[i] = Thread.new do
         if i % 2 == 0
           assert_raise Mongo::OperationFailure do
@@ -36,8 +36,8 @@ class TestThreadingLargePool < Test::Unit::TestCase
         end
       end
     end
-  
-    100.times do |i|
+
+    1000.times do |i|
       threads[i].join
     end
   end
@@ -45,7 +45,7 @@ class TestThreadingLargePool < Test::Unit::TestCase
   def test_safe_insert
     set_up_safe_data
     threads = []
-    100.times do |i|
+    1000.times do |i|
       threads[i] = Thread.new do
         if i % 2 == 0
           assert_raise Mongo::OperationFailure do
@@ -56,8 +56,8 @@ class TestThreadingLargePool < Test::Unit::TestCase
         end
       end
     end
-  
-    100.times do |i|
+
+    1000.times do |i|
       threads[i].join
     end
   end

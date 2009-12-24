@@ -54,6 +54,9 @@ module GridFS
     # Default is DEFAULT_CONTENT_TYPE
     attr_accessor :content_type
 
+    # Size of file in bytes
+    attr_reader :length
+
     attr_accessor :metadata
 
     attr_reader :files_id
@@ -70,7 +73,7 @@ module GridFS
     class << self
 
       def exist?(db, name, root_collection=DEFAULT_ROOT_COLLECTION)
-        db.collection("#{root_collection}.files").find({'filename' => name}).next_object != nil
+        db.collection("#{root_collection}.files").find({'filename' => name}).next_document != nil
       end
 
       def open(db, name, mode, options={})
@@ -91,12 +94,12 @@ module GridFS
         }
       end
 
-      # List the contains of all GridFS files stored in the given db and
+      # List the contents of all GridFS files stored in the given db and
       # root collection.
       #
       # :db :: the database to use
       #
-      # :root_collection :: the root collection to use
+      # :root_collection :: the root collection to use. If not specified, will use default root collection.
       def list(db, root_collection=DEFAULT_ROOT_COLLECTION)
         db.collection("#{root_collection}.files").find().map { |f|
           f['filename']
@@ -145,7 +148,7 @@ module GridFS
       @db, @filename, @mode = db, name, mode
       @root = options[:root] || DEFAULT_ROOT_COLLECTION
 
-      doc = collection.find({'filename' => @filename}).next_object
+      doc = collection.find({'filename' => @filename}).next_document
       if doc
         @files_id = doc['_id']
         @content_type = doc['contentType']
@@ -242,7 +245,7 @@ module GridFS
       str
     end
 
-    def read(len=nil, buf=nil)
+    def old_read(len=nil, buf=nil)
       buf ||= ''
       byte = self.getc
       while byte != nil && (len == nil || len > 0)
@@ -251,6 +254,14 @@ module GridFS
         byte = self.getc if (len == nil || len > 0)
       end
       buf
+    end
+
+    def read(len=nil, buf=nil)
+      if len
+        read_partial(len, buf)
+      else
+        read_all(buf)
+      end
     end
 
     def readchar
@@ -331,15 +342,21 @@ module GridFS
       write(obj.to_s)
     end
 
-    # Writes +string+ as bytes and returns the number of bytes written.
     def write(string)
       raise "#@filename not opened for write" unless @mode[0] == ?w
-      count = 0
-      string.each_byte { |byte|
-        self.putc byte
-        count += 1
-      }
-      count
+      to_write = string.length
+      while (to_write > 0) do
+        if @curr_chunk && @curr_chunk.data.position == @chunk_size
+          prev_chunk_number = @curr_chunk.chunk_number
+          @curr_chunk = GridFS::Chunk.new(self, 'n' => prev_chunk_number + 1)
+        end
+        chunk_available = @chunk_size - @curr_chunk.data.position
+        step_size = (to_write > chunk_available) ? chunk_available : to_write
+        @curr_chunk.data.put_array(ByteBuffer.new(string[-to_write,step_size]).to_a)
+        to_write -= step_size
+        @curr_chunk.save
+      end
+      string.length - to_write
     end
 
     # A no-op.
@@ -396,7 +413,7 @@ module GridFS
 
     def tell
       @position
-     end
+    end
 
     #---
     # ================ closing ================
@@ -446,13 +463,39 @@ module GridFS
       h
     end
 
+    def read_partial(len, buf=nil)
+      buf ||= ''
+      byte = self.getc
+      while byte != nil && (len == nil || len > 0)
+        buf << byte.chr
+        len -= 1 if len
+        byte = self.getc if (len == nil || len > 0)
+      end
+      buf
+    end
+
+    def read_all(buf=nil)
+      buf ||= ''
+      while true do
+        if (@curr_chunk.pos > 0)
+          data = @curr_chunk.data.to_s
+          buf += data[@position, data.length]
+        else
+          buf += @curr_chunk.data.to_s
+        end
+        break if @curr_chunk.chunk_number == last_chunk_number
+        @curr_chunk = nth_chunk(@curr_chunk.chunk_number + 1)
+      end
+      buf
+    end
+
     def delete_chunks
       chunk_collection.remove({'files_id' => @files_id}) if @files_id
       @curr_chunk = nil
     end
 
     def nth_chunk(n)
-      mongo_chunk = chunk_collection.find({'files_id' => @files_id, 'n' => n}).next_object
+      mongo_chunk = chunk_collection.find({'files_id' => @files_id, 'n' => n}).next_document
       Chunk.new(self, mongo_chunk || {})
     end
 
